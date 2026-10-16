@@ -62,10 +62,18 @@ end
 
 -- name -> { node, cmd, code, deps } for every named code block (not output blocks).
 local query
-local function named_blocks(buf)
+local function all_blocks(buf)
   query = query or vim.treesitter.query.parse('markdown', '(fenced_code_block) @b')
   local out = {}
   for _, node in query:iter_captures(parse(buf), buf) do
+    table.insert(out, node)
+  end
+  return out
+end
+
+local function named_blocks(buf)
+  local out = {}
+  for _, node in ipairs(all_blocks(buf)) do
     local lang, name, deps = info_of(node, buf)
     if name and lang ~= 'output' then
       if out[name] then error('duplicate block name: ' .. name, 0) end
@@ -239,6 +247,20 @@ function M.run()
     if not started then finish() end
   end
   step(1)
+end
+
+-- Delete every output block in the buffer, with the blank line after each.
+function M.clear()
+  local buf = vim.api.nvim_get_current_buf()
+  if running[buf] then return vim.notify('markexec: already running', vim.log.levels.WARN) end
+  local blocks = all_blocks(buf)
+  for i = #blocks, 1, -1 do -- bottom-up, so earlier rows stay valid
+    local open, close = fences(blocks[i])
+    if info_of(blocks[i], buf) == 'output' and close then
+      local after = vim.api.nvim_buf_get_lines(buf, close + 1, close + 2, false)[1]
+      vim.api.nvim_buf_set_lines(buf, open, close + (after == '' and 2 or 1), false, {})
+    end
+  end
 end
 
 function M.stop()

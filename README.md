@@ -39,6 +39,7 @@ hello
 | --------------- | ------------------------------------------------- |
 | `:MarkexecRun`  | Run the code block under the cursor               |
 | `:MarkexecStop` | Stop the block running in the current buffer      |
+| `:MarkexecClear`| Delete every `output` block in the current buffer |
 
 - The block's language names the interpreter: ` ```python3 ` runs `python3`,
   ` ```zsh ` runs `zsh`. The code runs from a temporary

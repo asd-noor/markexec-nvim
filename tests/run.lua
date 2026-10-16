@@ -122,4 +122,13 @@ assert(got[#got - 2] == "['ONE', 'two']", 'pipe output wrong: ' .. got[#got - 2]
 -- c's own input was only a's output, not b's
 assert(vim.tbl_contains(got, 'ONE') , 'c should uppercase a')
 
+-- clear: removes every output block, back to the original text
+want = { '# t', '', '```sh', 'echo a', '```', '', 'text', '```sh', 'echo b', '```', '' }
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, want)
+run_at(4)
+run_at(12)
+assert(#vim.api.nvim_buf_get_lines(buf, 0, -1, false) > #want, 'expected output blocks')
+markexec.clear()
+assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), want), 'clear should restore text')
+
 print('ok')
