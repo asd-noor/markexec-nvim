@@ -80,4 +80,33 @@ run_at(2)
 assert(vim.deep_equal(lines(), want), 'cycle should run nothing')
 assert(vim.bo[buf].modifiable)
 
+-- chunks: <<name>> pastes code (nested, indented); heredocs untouched
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+  '```sh env', 'URL=one', '```',
+  '```sh auth', '<<env>>', 'T="$URL-two"', '```',
+  '```sh get', '<<auth>>', 'cat <<EOF', '$T', 'EOF', '```',
+})
+run_at(10)
+local got = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+assert(got[16] == 'one-two', 'nested chunk not expanded')
+
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+  '```python3 greet', 'print("hi")', '```',
+  '```py main', 'def main():', '    <<greet>>', 'main()', '```',
+})
+run_at(5)
+assert(vim.api.nvim_buf_get_lines(buf, 0, -1, false)[11] == 'hi', 'indented python chunk wrong')
+
+-- language mismatch, cycles and unknown names run nothing
+for _, case in ipairs({
+  { '```sh env', 'X=1', '```', '```python3 p', '<<env>>', '```' },
+  { '```sh a', '<<b>>', '```', '```sh b', '<<a>>', '```' },
+  { '```sh a', 'X=1', '```', '```sh b', '<<nope>>', '```' },
+}) do
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, case)
+  run_at(5)
+  assert(vim.deep_equal(lines(), case), 'bad chunk should run nothing')
+  assert(vim.bo[buf].modifiable)
+end
+
 print('ok')

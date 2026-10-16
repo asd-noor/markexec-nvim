@@ -49,7 +49,18 @@ local function block_at_cursor(buf)
   return node
 end
 
--- name -> { node, deps } for every named code block (not output blocks).
+-- Interpreter for a fence language.
+local function interpreter(lang)
+  return aliases[lang] or lang
+end
+
+-- Code of a block, without the trailing newline.
+local function code_of(block, buf)
+  local content = child(block, 'code_fence_content')
+  return content and (vim.treesitter.get_node_text(content, buf):gsub('\n$', '')) or ''
+end
+
+-- name -> { node, cmd, code, deps } for every named code block (not output blocks).
 local query
 local function named_blocks(buf)
   query = query or vim.treesitter.query.parse('markdown', '(fenced_code_block) @b')
@@ -58,7 +69,7 @@ local function named_blocks(buf)
     local lang, name, deps = info_of(node, buf)
     if name and lang ~= 'output' then
       if out[name] then error('duplicate block name: ' .. name, 0) end
-      out[name] = { node = node, deps = deps }
+      out[name] = { node = node, cmd = interpreter(lang), code = code_of(node, buf), deps = deps }
     end
   end
   return out
@@ -96,15 +107,39 @@ local function output_lines(r, stamp)
   return lines
 end
 
+-- Replace each whole-line <<name>> with that block's code, indented like
+-- the reference, recursively. `seen` holds the names being expanded, to catch cycles.
+local function expand(code, cmd, blocks, seen)
+  local out = {}
+  for _, line in ipairs(vim.split(code, '\n')) do
+    local indent, ref = line:match('^(%s*)<<([%w_.-]+)>>%s*$')
+    local b = ref and blocks[ref]
+    if not ref then
+      table.insert(out, line)
+    elseif not b then
+      error('no block named: <<' .. ref .. '>>', 0)
+    else
+      if seen[ref] then error('reference cycle at: <<' .. ref .. '>>', 0) end
+      if b.cmd ~= cmd then error(('<<%s>>: %s block in %s block'):format(ref, b.cmd, cmd), 0) end
+      seen[ref] = true
+      for _, l in ipairs(vim.split(expand(b.code, cmd, blocks, seen), '\n')) do
+        table.insert(out, l == '' and l or indent .. l)
+      end
+      seen[ref] = nil
+    end
+  end
+  return table.concat(out, '\n')
+end
+
 -- Run one block and write its output block. Calls done(result) after writing.
 -- Returns false (after notifying) when the block cannot run.
-local function run_block(buf, block, done)
-  local lang = info_of(block, buf)
+local function run_block(buf, block, blocks, done)
+  local lang, name = info_of(block, buf)
   if not lang or lang == 'output' then
     vim.notify('markexec: no language on code block', vim.log.levels.WARN)
     return false
   end
-  local cmd = aliases[lang] or lang
+  local cmd = interpreter(lang)
   if vim.fn.executable(cmd) == 0 then
     vim.notify('markexec: interpreter not found: ' .. cmd, vim.log.levels.ERROR)
     return false
@@ -114,7 +149,11 @@ local function run_block(buf, block, done)
     vim.notify('markexec: code fence not closed', vim.log.levels.WARN)
     return false
   end
-  local content = child(block, 'code_fence_content')
+  local ok, code = pcall(expand, code_of(block, buf), cmd, blocks, name and { [name] = true } or {})
+  if not ok then
+    vim.notify('markexec: ' .. code, vim.log.levels.ERROR)
+    return false
+  end
 
   -- Region after the closing fence to replace: one blank line, then an output block
   -- directly below plus one blank line after it, if present.
@@ -136,7 +175,7 @@ local function run_block(buf, block, done)
     { cmd },
     {
       text = true,
-      stdin = content and vim.treesitter.get_node_text(content, buf) or '',
+      stdin = code .. '\n',
       timeout = 30000,
       cwd = vim.fn.isdirectory(dir) == 1 and dir or nil,
     },
@@ -177,8 +216,13 @@ function M.run()
 
   -- Output blocks shift rows, so look each block up by name right before it runs.
   local function step(k)
-    local b = order[k] and named_blocks(buf)[order[k]].node or block
-    local started = run_block(buf, b, function(r)
+    local ok_blocks, blocks = pcall(named_blocks, buf)
+    if not ok_blocks then
+      vim.notify('markexec: ' .. blocks, vim.log.levels.ERROR)
+      return finish()
+    end
+    local b = order[k] and blocks[order[k]].node or block
+    local started = run_block(buf, b, blocks, function(r)
       if k < #order and r.code == 0 and r.signal == 0 then step(k + 1) else finish() end
     end)
     if not started then finish() end

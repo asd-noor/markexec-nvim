@@ -51,6 +51,23 @@ hello
   have prerequisites of their own; each block runs once per run. It stops at the
   first block that fails, times out, or is stopped. Unknown names, duplicate
   names and cycles are reported and nothing runs.
+- A line that is only `<<name>>` pastes the code of block `name` in its place,
+  indented like the reference line, before the block runs. References nest. The
+  pasted code runs in the same process, so variables carry over; the referenced
+  block does not run on its own and gets no output block. It must use the same
+  interpreter. Unknown names, cycles and language mismatches are reported and
+  nothing runs. Heredocs like `cat <<EOF` are not references.
+
+  ````markdown
+  ```sh env
+  URL=https://httpbin.org/get
+  ```
+
+  ```sh get
+  <<env>>
+  curl "$URL"
+  ```
+  ````
 - The command runs in the file's directory, with a 30 second timeout.
 - Stdout and stderr go into the output block. A non-zero exit adds `[exit N]`;
   a timeout adds `[timeout]`; `:MarkexecStop` adds `[killed]`.
