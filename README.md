@@ -44,6 +44,13 @@ hello
   ` ```zsh ` runs `zsh`. The code is passed on stdin.
 - Short names are mapped: `py` to `python3`, `js` and `javascript` to `node`,
   `rb` to `ruby`.
+- Name a block and list its prerequisites after the language:
+  ` ```sh build setup deps ` is block `build`, which needs `setup` then `deps`.
+  Running `build` runs `setup`, `deps`, then `build`, each in its own process
+  with its own output block. Prerequisites can be anywhere in the file and can
+  have prerequisites of their own; each block runs once per run. It stops at the
+  first block that fails, times out, or is stopped. Unknown names, duplicate
+  names and cycles are reported and nothing runs.
 - The command runs in the file's directory, with a 30 second timeout.
 - Stdout and stderr go into the output block. A non-zero exit adds `[exit N]`;
   a timeout adds `[timeout]`; `:MarkexecStop` adds `[killed]`.

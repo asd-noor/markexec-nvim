@@ -44,4 +44,40 @@ markexec.run()
 assert(vim.wait(5000, function() return not markexec._running[buf] end))
 assert(vim.api.nvim_buf_get_lines(buf, 0, -1, false)[6] == '2', 'python3 block output wrong')
 
+-- named blocks: prerequisites run first, recursively, wherever they are in the file
+local function run_at(row)
+  vim.api.nvim_win_set_cursor(0, { row, 0 })
+  markexec.run()
+  assert(vim.wait(5000, function() return not markexec._running[buf] end))
+end
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+  '```sh c b', 'echo three', '```',
+  '```sh other', 'echo other', '```',
+  '```sh a', 'echo one', '```',
+  '```sh b a', 'echo two', '```',
+})
+run_at(2)
+want = {
+  '```sh c b', 'echo three', '```', '', '```output TS', 'three', '```', '',
+  '```sh other', 'echo other', '```',
+  '```sh a', 'echo one', '```', '', '```output TS', 'one', '```', '',
+  '```sh b a', 'echo two', '```', '', '```output TS', 'two', '```', '',
+}
+assert(vim.deep_equal(lines(), want), 'prerequisite output wrong')
+assert(vim.bo[buf].modifiable, 'buffer should be unlocked after prerequisites')
+
+-- stops at the first failing prerequisite
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, { '```sh a', 'exit 3', '```', '```sh b a', 'echo two', '```' })
+run_at(5)
+want = { '```sh a', 'exit 3', '```', '', '```output TS', '[exit 3]', '```', '', '```sh b a', 'echo two', '```' }
+assert(vim.deep_equal(lines(), want), 'should stop on failing prerequisite')
+assert(vim.bo[buf].modifiable)
+
+-- a cycle runs nothing
+want = { '```sh a b', 'echo a', '```', '```sh b a', 'echo b', '```' }
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, want)
+run_at(2)
+assert(vim.deep_equal(lines(), want), 'cycle should run nothing')
+assert(vim.bo[buf].modifiable)
+
 print('ok')

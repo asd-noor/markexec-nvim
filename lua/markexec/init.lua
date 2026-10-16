@@ -19,10 +19,12 @@ local function child(node, type)
   end
 end
 
-local function lang_of(block, buf)
+-- Fence header ```<lang> [name] [prereq...] -> lang, name, { prereq... }
+local function info_of(block, buf)
   local info = child(block, 'info_string')
-  local lang = info and child(info, 'language')
-  return lang and vim.treesitter.get_node_text(lang, buf)
+  if not info then return end
+  local words = vim.split(vim.treesitter.get_node_text(info, buf), '%s+', { trimempty = true })
+  return words[1], words[2], { unpack(words, 3) }
 end
 
 -- Rows (0-based) of the opening and closing fence, or nil if the fence is not closed.
@@ -34,13 +36,48 @@ local function fences(block)
   if #rows == 2 then return rows[1], rows[2] end
 end
 
+local function parse(buf)
+  return vim.treesitter.get_parser(buf, 'markdown'):parse()[1]:root()
+end
+
 local function block_at_cursor(buf)
-  vim.treesitter.get_parser(buf, 'markdown'):parse()
+  parse(buf)
   local node = vim.treesitter.get_node({ bufnr = buf, ignore_injections = true })
   while node and node:type() ~= 'fenced_code_block' do
     node = node:parent()
   end
   return node
+end
+
+-- name -> { node, deps } for every named code block (not output blocks).
+local query
+local function named_blocks(buf)
+  query = query or vim.treesitter.query.parse('markdown', '(fenced_code_block) @b')
+  local out = {}
+  for _, node in query:iter_captures(parse(buf), buf) do
+    local lang, name, deps = info_of(node, buf)
+    if name and lang ~= 'output' then
+      if out[name] then error('duplicate block name: ' .. name, 0) end
+      out[name] = { node = node, deps = deps }
+    end
+  end
+  return out
+end
+
+-- Names to run for `name`, prerequisites first (depth-first, each block once).
+local function plan(blocks, name)
+  local order, state = {}, {}
+  local function visit(n)
+    if state[n] == 'done' then return end
+    if state[n] == 'visiting' then error('dependency cycle at: ' .. n, 0) end
+    local b = blocks[n] or error('no block named: ' .. n, 0)
+    state[n] = 'visiting'
+    for _, d in ipairs(b.deps) do visit(d) end
+    state[n] = 'done'
+    table.insert(order, n)
+  end
+  visit(name)
+  return order
 end
 
 local function output_lines(r, stamp)
@@ -59,22 +96,25 @@ local function output_lines(r, stamp)
   return lines
 end
 
-function M.run()
-  local buf = vim.api.nvim_get_current_buf()
-  if running[buf] then return vim.notify('markexec: already running', vim.log.levels.WARN) end
-
-  local ok, block = pcall(block_at_cursor, buf)
-  if not ok or not block then return vim.notify('markexec: not in a code block', vim.log.levels.WARN) end
-
-  local lang = lang_of(block, buf)
-  if not lang or lang == 'output' then return vim.notify('markexec: no language on code block', vim.log.levels.WARN) end
+-- Run one block and write its output block. Calls done(result) after writing.
+-- Returns false (after notifying) when the block cannot run.
+local function run_block(buf, block, done)
+  local lang = info_of(block, buf)
+  if not lang or lang == 'output' then
+    vim.notify('markexec: no language on code block', vim.log.levels.WARN)
+    return false
+  end
   local cmd = aliases[lang] or lang
-  if vim.fn.executable(cmd) == 0 then return vim.notify('markexec: interpreter not found: ' .. cmd, vim.log.levels.ERROR) end
-
+  if vim.fn.executable(cmd) == 0 then
+    vim.notify('markexec: interpreter not found: ' .. cmd, vim.log.levels.ERROR)
+    return false
+  end
   local _, close = fences(block)
-  if not close then return vim.notify('markexec: code fence not closed', vim.log.levels.WARN) end
+  if not close then
+    vim.notify('markexec: code fence not closed', vim.log.levels.WARN)
+    return false
+  end
   local content = child(block, 'code_fence_content')
-  if not content then return end
 
   -- Region after the closing fence to replace: one blank line, then an output block
   -- directly below plus one blank line after it, if present.
@@ -82,7 +122,7 @@ function M.run()
   local first = close + 1
   local last = blank(first) and first + 1 or first
   local nxt = block:next_named_sibling()
-  if nxt and nxt:type() == 'fenced_code_block' and lang_of(nxt, buf) == 'output' then
+  if nxt and nxt:type() == 'fenced_code_block' and info_of(nxt, buf) == 'output' then
     local open2, close2 = fences(nxt)
     if open2 == last and close2 then
       last = close2 + 1
@@ -91,20 +131,59 @@ function M.run()
   end
 
   local stamp = os.date('%Y-%m-%d %H:%M:%S')
-  local dir = vim.fn.expand('%:p:h')
-  local modifiable = vim.bo[buf].modifiable
-  vim.bo[buf].modifiable = false
-
+  local dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ':p:h')
   running[buf] = vim.system(
     { cmd },
-    { text = true, stdin = vim.treesitter.get_node_text(content, buf), timeout = 30000, cwd = vim.fn.isdirectory(dir) == 1 and dir or nil },
+    {
+      text = true,
+      stdin = content and vim.treesitter.get_node_text(content, buf) or '',
+      timeout = 30000,
+      cwd = vim.fn.isdirectory(dir) == 1 and dir or nil,
+    },
     vim.schedule_wrap(function(r)
       running[buf] = nil
       if not vim.api.nvim_buf_is_valid(buf) then return end
-      vim.bo[buf].modifiable = modifiable
+      vim.bo[buf].modifiable = true
       vim.api.nvim_buf_set_lines(buf, first, last, false, output_lines(r, stamp))
+      vim.bo[buf].modifiable = false
+      done(r)
     end)
   )
+  return true
+end
+
+-- Run the block under the cursor. A named block (```sh build setup deps) first runs its
+-- prerequisites in order, recursively, each once; it stops at the first failure.
+function M.run()
+  local buf = vim.api.nvim_get_current_buf()
+  if running[buf] then return vim.notify('markexec: already running', vim.log.levels.WARN) end
+
+  local ok, block = pcall(block_at_cursor, buf)
+  if not ok or not block then return vim.notify('markexec: not in a code block', vim.log.levels.WARN) end
+
+  local _, name = info_of(block, buf)
+  local order = { false } -- false = the cursor block itself
+  if name then
+    local planned, res = pcall(function() return plan(named_blocks(buf), name) end)
+    if not planned then return vim.notify('markexec: ' .. res, vim.log.levels.ERROR) end
+    order = res
+  end
+
+  local modifiable = vim.bo[buf].modifiable
+  vim.bo[buf].modifiable = false
+  local function finish()
+    if vim.api.nvim_buf_is_valid(buf) then vim.bo[buf].modifiable = modifiable end
+  end
+
+  -- Output blocks shift rows, so look each block up by name right before it runs.
+  local function step(k)
+    local b = order[k] and named_blocks(buf)[order[k]].node or block
+    local started = run_block(buf, b, function(r)
+      if k < #order and r.code == 0 and r.signal == 0 then step(k + 1) else finish() end
+    end)
+    if not started then finish() end
+  end
+  step(1)
 end
 
 function M.stop()
