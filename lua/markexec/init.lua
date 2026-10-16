@@ -1,7 +1,7 @@
 local M = {}
 
 -- Header names that are not the interpreter's binary name. Anything else runs as-is,
--- e.g. ```python -> `python`. Code is fed on stdin.
+-- e.g. ```python -> `python`. Code runs from a temp script file: `<interpreter> <file>`.
 local aliases = {
   py = 'python3',
   js = 'node',
@@ -131,9 +131,9 @@ local function expand(code, cmd, blocks, seen)
   return table.concat(out, '\n')
 end
 
--- Run one block and write its output block. Calls done(result) after writing.
--- Returns false (after notifying) when the block cannot run.
-local function run_block(buf, block, blocks, done)
+-- Run one block with `input` on stdin and write its output block. Calls done(result)
+-- after writing. Returns false (after notifying) when the block cannot run.
+local function run_block(buf, block, blocks, input, done)
   local lang, name = info_of(block, buf)
   if not lang or lang == 'output' then
     vim.notify('markexec: no language on code block', vim.log.levels.WARN)
@@ -171,16 +171,19 @@ local function run_block(buf, block, blocks, done)
 
   local stamp = os.date('%Y-%m-%d %H:%M:%S')
   local dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buf), ':p:h')
+  local script = vim.fn.tempname()
+  vim.fn.writefile(vim.split(code, '\n'), script)
   running[buf] = vim.system(
-    { cmd },
+    { cmd, script },
     {
       text = true,
-      stdin = code .. '\n',
+      stdin = input,
       timeout = 30000,
       cwd = vim.fn.isdirectory(dir) == 1 and dir or nil,
     },
     vim.schedule_wrap(function(r)
       running[buf] = nil
+      os.remove(script)
       if not vim.api.nvim_buf_is_valid(buf) then return end
       vim.bo[buf].modifiable = true
       vim.api.nvim_buf_set_lines(buf, first, last, false, output_lines(r, stamp))
@@ -192,7 +195,8 @@ local function run_block(buf, block, blocks, done)
 end
 
 -- Run the block under the cursor. A named block (```sh build setup deps) first runs its
--- prerequisites in order, recursively, each once; it stops at the first failure.
+-- prerequisites in order, recursively, each once; it stops at the first failure. The
+-- stdout of the prerequisites a block lists is piped into it: { setup; deps; } | build.
 function M.run()
   local buf = vim.api.nvim_get_current_buf()
   if running[buf] then return vim.notify('markexec: already running', vim.log.levels.WARN) end
@@ -214,6 +218,8 @@ function M.run()
     if vim.api.nvim_buf_is_valid(buf) then vim.bo[buf].modifiable = modifiable end
   end
 
+  local stdout = {} -- name -> stdout from this run
+
   -- Output blocks shift rows, so look each block up by name right before it runs.
   local function step(k)
     local ok_blocks, blocks = pcall(named_blocks, buf)
@@ -222,7 +228,12 @@ function M.run()
       return finish()
     end
     local b = order[k] and blocks[order[k]].node or block
-    local started = run_block(buf, b, blocks, function(r)
+    local input = {}
+    for _, d in ipairs(order[k] and blocks[order[k]].deps or {}) do
+      table.insert(input, stdout[d])
+    end
+    local started = run_block(buf, b, blocks, table.concat(input), function(r)
+      if order[k] then stdout[order[k]] = r.stdout end
       if k < #order and r.code == 0 and r.signal == 0 then step(k + 1) else finish() end
     end)
     if not started then finish() end

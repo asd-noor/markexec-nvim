@@ -109,4 +109,17 @@ for _, case in ipairs({
   assert(vim.bo[buf].modifiable)
 end
 
+-- pipes: stdout of listed prerequisites goes to stdin, in listed order, across languages
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+  '```sh a', 'echo one', '```',
+  '```python3 b', 'print("two")', '```',
+  '```sh c a', 'tr a-z A-Z', '```',
+  '```python3 d c b', 'import sys', 'print(sys.stdin.read().split())', '```',
+})
+run_at(11)
+got = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+assert(got[#got - 2] == "['ONE', 'two']", 'pipe output wrong: ' .. got[#got - 2])
+-- c's own input was only a's output, not b's
+assert(vim.tbl_contains(got, 'ONE') , 'c should uppercase a')
+
 print('ok')

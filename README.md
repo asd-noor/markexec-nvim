@@ -41,7 +41,8 @@ hello
 | `:MarkexecStop` | Stop the block running in the current buffer      |
 
 - The block's language names the interpreter: ` ```python3 ` runs `python3`,
-  ` ```zsh ` runs `zsh`. The code is passed on stdin.
+  ` ```zsh ` runs `zsh`. The code runs from a temporary
+  script file (`zsh /tmp/...`).
 - Short names are mapped: `py` to `python3`, `js` and `javascript` to `node`,
   `rb` to `ruby`.
 - Name a block and list its prerequisites after the language:
@@ -51,6 +52,20 @@ hello
   have prerequisites of their own; each block runs once per run. It stops at the
   first block that fails, times out, or is stopped. Unknown names, duplicate
   names and cycles are reported and nothing runs.
+- The stdout of the prerequisites a block lists is piped into its stdin, in the
+  listed order, like `{ setup; deps; } | build`. Only the listed ones: their own
+  prerequisites feed them, not the block. Languages can differ.
+
+  ````markdown
+  ```sh get
+  curl -s https://httpbin.org/get
+  ```
+
+  ```python3 parse get
+  import json, sys
+  print(json.load(sys.stdin)['url'])
+  ```
+  ````
 - A line that is only `<<name>>` pastes the code of block `name` in its place,
   indented like the reference line, before the block runs. References nest. The
   pasted code runs in the same process, so variables carry over; the referenced
