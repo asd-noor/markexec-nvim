@@ -43,7 +43,7 @@ local function block_at_cursor(buf)
   return node
 end
 
-local function output_lines(r)
+local function output_lines(r, stamp)
   local text = vim.trim((r.stdout or '') .. (r.stderr or ''))
   local lines = text == '' and {} or vim.split(text, '\n')
   if r.code == 124 and r.signal == 15 then
@@ -53,8 +53,9 @@ local function output_lines(r)
   elseif r.code ~= 0 then
     table.insert(lines, '[exit ' .. r.code .. ']')
   end
-  table.insert(lines, 1, '```output')
-  table.insert(lines, '```')
+  table.insert(lines, 1, '```output ' .. stamp)
+  table.insert(lines, 1, '')
+  vim.list_extend(lines, { '```', '' })
   return lines
 end
 
@@ -75,14 +76,21 @@ function M.run()
   local content = child(block, 'code_fence_content')
   if not content then return end
 
-  -- Replace an output block that sits right under this one, else insert after the closing fence.
-  local first, last = close + 1, close + 1
+  -- Region after the closing fence to replace: one blank line, then an output block
+  -- directly below plus one blank line after it, if present.
+  local function blank(row) return vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] == '' end
+  local first = close + 1
+  local last = blank(first) and first + 1 or first
   local nxt = block:next_named_sibling()
   if nxt and nxt:type() == 'fenced_code_block' and lang_of(nxt, buf) == 'output' then
     local open2, close2 = fences(nxt)
-    if open2 == first and close2 then last = close2 + 1 end
+    if open2 == last and close2 then
+      last = close2 + 1
+      if blank(last) then last = last + 1 end
+    end
   end
 
+  local stamp = os.date('%Y-%m-%d %H:%M:%S')
   local dir = vim.fn.expand('%:p:h')
   local modifiable = vim.bo[buf].modifiable
   vim.bo[buf].modifiable = false
@@ -94,7 +102,7 @@ function M.run()
       running[buf] = nil
       if not vim.api.nvim_buf_is_valid(buf) then return end
       vim.bo[buf].modifiable = modifiable
-      vim.api.nvim_buf_set_lines(buf, first, last, false, output_lines(r))
+      vim.api.nvim_buf_set_lines(buf, first, last, false, output_lines(r, stamp))
     end)
   )
 end

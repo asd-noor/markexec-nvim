@@ -7,7 +7,8 @@ output into an `output` block right below it.
 ```sh
 echo hello
 ```
-```output
+
+```output 2026-10-16 13:05:22
 hello
 ```
 ````
@@ -46,7 +47,8 @@ hello
 - The command runs in the file's directory, with a 30 second timeout.
 - Stdout and stderr go into the output block. A non-zero exit adds `[exit N]`;
   a timeout adds `[timeout]`; `:MarkexecStop` adds `[killed]`.
-- Running the block again replaces an output block that sits directly under it.
+- The output block's header records when the run started: `output YYYY-MM-DD HH:MM:SS`.
+- Running the block again replaces the output block below it (one blank line apart).
 - The buffer is read-only while a block runs, so the output always lands in the
   right place.
 
